@@ -8,7 +8,7 @@ from omegaconf import OmegaConf
 from gflownet.algo.trajectory_balance import TrajectoryBalance
 from gflownet.config import Config
 from gflownet.envs.frag_mol_env import FragMolBuildingEnvContext
-from gflownet.envs.graph_building_env import GraphBuildingEnv
+from gflownet.envs.graph_building_env import ActionIndex, GraphBuildingEnv
 from gflownet.envs.mol_building_env import MolBuildingEnvContext
 from gflownet.models import bengio2021flow
 
@@ -50,14 +50,14 @@ def build_two_node_states(ctx):
     def expand(s, idx):
         # Recursively expand all children of s
         gd = ctx.graph_to_Data(s)
-        masks = [getattr(gd, gat.mask_name) for gat in ctx.action_type_order]
-        for at, mask in enumerate(masks):
+        action_masks = [getattr(gd, gat.mask_name) for gat in ctx.action_type_order]
+        for at, mask in enumerate(action_masks):
             if at == 0:  # Ignore Stop action
                 continue
             nz = mask.nonzero()
             for i in nz:  # Only expand non-masked legal actions
-                aidx = (at, i[0].item(), i[1].item())
-                ga = ctx.aidx_to_GraphAction(gd, aidx)
+                aidx = ActionIndex(at, i[0].item(), i[1].item())
+                ga = ctx.ActionIndex_to_GraphAction(gd, aidx)
                 sp = env.step(s, ga)
                 h = g2h(sp)
                 if h in graph_cache:
@@ -106,8 +106,8 @@ def two_node_states_atoms(request):
     return data
 
 
-def _test_backwards_mask_equivalence(two_node_states, ctx):
-    """This tests that FragMolBuildingEnvContext implements backwards masks correctly. It treats
+def _test_backwards_action_mask_equivalence(two_node_states, ctx):
+    """This tests that FragMolBuildingEnvContext implements backwards action masks correctly. It treats
     GraphBuildingEnv.count_backward_transitions as the ground truth and raises an error if there is
     a different number of actions leading to the parents of any state.
     """
@@ -124,7 +124,7 @@ def _test_backwards_mask_equivalence(two_node_states, ctx):
             raise ValueError()
 
 
-def _test_backwards_mask_equivalence_ipa(two_node_states, ctx):
+def _test_backwards_action_mask_equivalence_ipa(two_node_states, ctx):
     """This tests that FragMolBuildingEnvContext implements backwards masks correctly. It treats
     GraphBuildingEnv.count_backward_transitions as the ground truth and raises an error if there is
     a different number of actions leading to the parents of any state.
@@ -144,15 +144,15 @@ def _test_backwards_mask_equivalence_ipa(two_node_states, ctx):
         equivalence_classes = []
         for u, k in enumerate(ctx.bck_action_type_order):
             m = getattr(gd, k.mask_name)
-            for a in m.nonzero():
-                a = (u, a[0].item(), a[1].item())
+            for aidx in m.nonzero():
+                aidx = ActionIndex(u, aidx[0].item(), aidx[1].item())
                 for c in equivalence_classes:
                     # Here `a` could have been added in another equivalence class by
                     # get_idempotent_actions. If so, no need to check it.
-                    if a in c:
+                    if aidx in c:
                         break
                 else:
-                    ga = ctx.aidx_to_GraphAction(gd, a, fwd=False)
+                    ga = ctx.ActionIndex_to_GraphAction(gd, aidx, fwd=False)
                     gp = env.step(g, ga)
                     # TODO: It is a bit weird that get_idempotent_actions is in an algo class,
                     # probably also belongs in a graph utils file.
@@ -162,17 +162,17 @@ def _test_backwards_mask_equivalence_ipa(two_node_states, ctx):
             raise ValueError()
 
 
-def test_backwards_mask_equivalence_frag(two_node_states_frags):
-    _test_backwards_mask_equivalence(two_node_states_frags, get_frag_env_ctx())
+def test_backwards_action_mask_equivalence_frag(two_node_states_frags):
+    _test_backwards_action_mask_equivalence(two_node_states_frags, get_frag_env_ctx())
 
 
-def test_backwards_mask_equivalence_ipa_frag(two_node_states_frags):
-    _test_backwards_mask_equivalence_ipa(two_node_states_frags, get_frag_env_ctx())
+def test_backwards_action_mask_equivalence_ipa_frag(two_node_states_frags):
+    _test_backwards_action_mask_equivalence_ipa(two_node_states_frags, get_frag_env_ctx())
 
 
-def test_backwards_mask_equivalence_atom(two_node_states_atoms):
-    _test_backwards_mask_equivalence(two_node_states_atoms, get_atom_env_ctx())
+def test_backwards_action_mask_equivalence_atom(two_node_states_atoms):
+    _test_backwards_action_mask_equivalence(two_node_states_atoms, get_atom_env_ctx())
 
 
-def test_backwards_mask_equivalence_ipa_atom(two_node_states_atoms):
-    _test_backwards_mask_equivalence_ipa(two_node_states_atoms, get_atom_env_ctx())
+def test_backwards_action_mask_equivalence_ipa_atom(two_node_states_atoms):
+    _test_backwards_action_mask_equivalence_ipa(two_node_states_atoms, get_atom_env_ctx())
