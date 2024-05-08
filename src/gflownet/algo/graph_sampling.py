@@ -14,6 +14,7 @@ from gflownet.envs.graph_building_env import (
     action_type_to_mask,
 )
 from gflownet.models.graph_transformer import GraphTransformerGFN
+from gflownet.utils.misc import get_worker_device, get_worker_rng
 
 
 def relabel(g: Graph, ga: GraphAction):
@@ -37,7 +38,7 @@ class GraphSampler:
     """A helper class to sample from GraphActionCategorical-producing models"""
 
     def __init__(
-        self, ctx, env, max_len, max_nodes, rng, sample_temp=1, correct_idempotent=False, pad_with_terminal_state=False
+        self, ctx, env, max_len, max_nodes, sample_temp=1, correct_idempotent=False, pad_with_terminal_state=False
     ):
         """
         Parameters
@@ -50,8 +51,6 @@ class GraphSampler:
             If not None, ends trajectories of more than max_len steps.
         max_nodes: int
             If not None, ends trajectories of graphs with more than max_nodes steps (illegal action).
-        rng: np.random.RandomState
-            rng used to take random actions
         sample_temp: float
             [Experimental] Softmax temperature used when sampling
         correct_idempotent: bool
@@ -63,16 +62,13 @@ class GraphSampler:
         self.env = env
         self.max_len = max_len if max_len is not None else 128
         self.max_nodes = max_nodes if max_nodes is not None else 128
-        self.rng = rng
         # Experimental flags
         self.sample_temp = sample_temp
         self.sanitize_samples = True
         self.correct_idempotent = correct_idempotent
         self.pad_with_terminal_state = pad_with_terminal_state
 
-    def sample_from_model(
-        self, model: nn.Module, n: int, cond_info: Tensor, dev: torch.device, random_action_prob: float = 0.0
-    ):
+    def sample_from_model(self, model: nn.Module, n: int, cond_info: Optional[Tensor], random_action_prob: float = 0.0):
         """Samples a model in a minibatch
 
         Parameters
@@ -83,8 +79,6 @@ class GraphSampler:
             Number of graphs to sample
         cond_info: Tensor
             Conditional information of each trajectory, shape (n, n_info)
-        dev: torch.device
-            Device on which data is manipulated
         random_action_prob: float
             Probability of taking a random action at each step
 
@@ -97,6 +91,7 @@ class GraphSampler:
            - bck_logprob: sum logprobs P_B
            - is_valid: is the generated graph valid according to the env & ctx
         """
+        dev = get_worker_device()
         # This will be returned
         data = [{"traj": [], "reward_pred": None, "is_valid": True, "is_sink": []} for i in range(n)]
         # Let's also keep track of trajectory statistics according to the model
@@ -112,6 +107,8 @@ class GraphSampler:
         # evaluated at s_{t+1} not s_t.
         bck_a = [[GraphAction(GraphActionType.Stop)] for _ in range(n)]
 
+        rng = get_worker_rng()
+
         def not_done(lst):
             return [e for i, e in enumerate(lst) if not done[i]]
 
@@ -122,11 +119,12 @@ class GraphSampler:
             # Forward pass to get GraphActionCategorical
             # Note about `*_`, the model may be outputting its own bck_cat, but we ignore it if it does.
             # TODO: compute bck_cat.log_prob(bck_a) when relevant
-            fwd_cat, *_, log_reward_preds = model(self.ctx.collate(torch_graphs).to(dev), cond_info[not_done_mask])
+            ci = cond_info[not_done_mask] if cond_info is not None else None
+            fwd_cat, *_, log_reward_preds = model(self.ctx.collate(torch_graphs).to(dev), ci)
             if random_action_prob > 0:
                 # Device which graphs in the minibatch will get their action randomized
                 is_random_action = torch.tensor(
-                    self.rng.uniform(size=len(torch_graphs)) < random_action_prob, device=dev
+                    rng.uniform(size=len(torch_graphs)) < random_action_prob, device=dev
                 ).float()
                 # Set the logits to some large value to have a uniform distribution
                 fwd_cat.logits = [
@@ -172,8 +170,7 @@ class GraphSampler:
                     data[i]["is_sink"].append(0)
                     graphs[i] = gp
                 if done[i] and self.sanitize_samples and not self.ctx.is_sane(graphs[i]):
-                    # check if the graph is sane (e.g. RDKit can
-                    # construct a molecule from it) otherwise
+                    # check if the graph is sane (e.g. RDKit can  construct a molecule from it) otherwise
                     # treat the done action as illegal
                     data[i]["is_valid"] = False
             if all(done):
@@ -212,8 +209,7 @@ class GraphSampler:
         self,
         graphs: List[Graph],
         model: Optional[nn.Module],
-        cond_info: Tensor,
-        dev: torch.device,
+        cond_info: Optional[Tensor],
         random_action_prob: float = 0.0,
     ):
         """Sample a model's P_B starting from a list of graphs, or if the model is None, use a uniform distribution
@@ -233,6 +229,7 @@ class GraphSampler:
             Probability of taking a random action (only used if model parameterizes P_B)
 
         """
+        dev = get_worker_device()
         n = len(graphs)
         done = [False] * n
         data = [
@@ -258,7 +255,8 @@ class GraphSampler:
             torch_graphs = [self.ctx.graph_to_Data(graphs[i]) for i in not_done(range(n))]
             not_done_mask = torch.tensor(done, device=dev).logical_not()
             if model is not None:
-                _, bck_cat, *_ = model(self.ctx.collate(torch_graphs).to(dev), cond_info[not_done_mask])
+                ci = cond_info[not_done_mask] if cond_info is not None else None
+                _, bck_cat, *_ = model(self.ctx.collate(torch_graphs).to(dev), ci)
             else:
                 gbatch = self.ctx.collate(torch_graphs)
                 action_types = self.ctx.bck_action_type_order

@@ -4,10 +4,11 @@ import numpy as np
 import torch
 
 from gflownet.config import Config
+from gflownet.utils.misc import get_worker_rng
 
 
 class ReplayBuffer(object):
-    def __init__(self, cfg: Config, rng: np.random.Generator = None):
+    def __init__(self, cfg: Config):
         """
         Replay buffer for storing and sampling arbitrary data (e.g. transitions or trajectories)
         In self.push(), the buffer detaches any torch tensor and sends it to the CPU.
@@ -18,7 +19,6 @@ class ReplayBuffer(object):
 
         self.buffer: List[tuple] = []
         self.position = 0
-        self.rng = rng
 
     def push(self, *args):
         if len(self.buffer) == 0:
@@ -32,7 +32,7 @@ class ReplayBuffer(object):
         self.position = (self.position + 1) % self.capacity
 
     def sample(self, batch_size):
-        idxs = self.rng.choice(len(self.buffer), batch_size)
+        idxs = get_worker_rng().choice(len(self.buffer), batch_size)
         out = list(zip(*[self.buffer[idx] for idx in idxs]))
         for i in range(len(out)):
             # stack if all elements are numpy arrays or torch tensors
