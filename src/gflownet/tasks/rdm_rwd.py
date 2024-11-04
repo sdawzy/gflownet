@@ -22,7 +22,6 @@ from gflownet.utils.transforms import to_logreward
 
 class RdmRwdTask(GFNTask):
     """Sets up a task where the reward is a random number normalized to [0, 1].
-
     """
 
     def __init__(
